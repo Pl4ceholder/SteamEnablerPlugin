@@ -10,6 +10,12 @@ namespace SteamEnablerPlugin
     [ApiVersion(2, 1)]
     public class SteamEnabler : TerrariaPlugin
     {
+        /// <summary>
+        /// The Steamworks.NET version that ships with the supported Terraria version.
+        /// Terraria 1.4.5.8 references Steamworks.NET 2024.8.0.0.
+        /// </summary>
+        private static readonly Version SupportedSteamworksNetVersion = new(2024, 8, 0, 0);
+
         public override string Name { get; } = typeof(SteamEnabler).Assembly.GetCustomAttribute<AssemblyTitleAttribute>()?.Title ?? nameof(SteamEnablerPlugin);
 
         public override string Description { get; } = typeof(SteamEnabler).Assembly.GetCustomAttribute<AssemblyDescriptionAttribute>()?.Description ?? "";
@@ -106,7 +112,9 @@ namespace SteamEnablerPlugin
             object state
         )
         {
-            // UPDATE TODO: Has the vanilla code changed?
+            // Terraria 1.4.5.8 still uses Delegate.BeginInvoke here, which is
+            // not supported on .NET. Mirror the vanilla behavior with the
+            // thread pool instead.
             Task.Run(() => self.ReadCallback(data, offset, size, callback, state));
         }
 
@@ -120,7 +128,8 @@ namespace SteamEnablerPlugin
             object state
         )
         {
-            // UPDATE TODO: Has the vanilla code changed?
+            // Terraria 1.4.5.8 still uses Delegate.BeginInvoke for the send
+            // callback, which is not supported on .NET.
             SocialAPI.Network.Send(self._remoteAddress, data, size);
             Task.Run(() => callback(state));
         }
@@ -131,9 +140,9 @@ namespace SteamEnablerPlugin
         /// <param name="path">The path to the unzipped Steamworks.NET files.</param>
         private static void Download_SteamworksNET(out string path)
         {
-            var terrariaAssembly = typeof(Projectile).Assembly;
-            var terrariaDependencies = terrariaAssembly.GetReferencedAssemblies();
-            var dependency_SteamworksNET = terrariaDependencies.FirstOrDefault(static d => d.Name == "Steamworks.NET");
+            var dependency_SteamworksNET = typeof(Projectile).Assembly
+                .GetReferencedAssemblies()
+                .FirstOrDefault(static d => d.Name == "Steamworks.NET");
             if (dependency_SteamworksNET == null)
             {
                 Console.WriteLine("Unsupported Terraria version (Terraria doesn't depend on Steamworks.NET.dll).");
@@ -141,99 +150,134 @@ namespace SteamEnablerPlugin
                 path = null;
                 return;
             }
-            else
+
+            var version_SteamworksNET = dependency_SteamworksNET.Version;
+            if (version_SteamworksNET == null)
             {
-                var version_SteamworksNET = dependency_SteamworksNET.Version;
-                if (version_SteamworksNET == null)
-                {
-                    Console.WriteLine("Steamworks.NET version is undefined. Assuming 20.1.0.0.");
-                    version_SteamworksNET = new Version(20, 1, 0, 0);
-                }
-                if (version_SteamworksNET != new Version(20, 1, 0, 0))
-                {
-                    Console.WriteLine($"Unsupported Steamworks.NET version \"{version_SteamworksNET}\". Experimentally downloading version nonetheless.");
-                }
+                Console.WriteLine($"Steamworks.NET version is undefined. Assuming {SupportedSteamworksNetVersion}.");
+                version_SteamworksNET = SupportedSteamworksNetVersion;
+            }
+            if (version_SteamworksNET != SupportedSteamworksNetVersion)
+            {
+                Console.WriteLine($"Unsupported Steamworks.NET version \"{version_SteamworksNET}\". Experimentally downloading version nonetheless.");
+            }
 
-                var downloadFolder = Path.Combine(Path.GetTempPath(), "Steamworks.NET");
-                Directory.CreateDirectory(downloadFolder);
-                var unzippedSteamworksNETPath = Path.Combine(downloadFolder, $"{version_SteamworksNET}");
-                if (Directory.Exists(unzippedSteamworksNETPath))
-                {
-                    path = unzippedSteamworksNETPath;
-                    return;
-                }
+            var downloadVersion = version_SteamworksNET.Revision == 0
+                ? version_SteamworksNET.ToString(3)
+                : version_SteamworksNET.ToString()
+                ;
+            var downloadFolder = Path.Combine(Path.GetTempPath(), "Steamworks.NET");
+            Directory.CreateDirectory(downloadFolder);
+            var unzippedSteamworksNETPath = Path.Combine(downloadFolder, downloadVersion);
+            var zippedSteamworksNETPath = $"{unzippedSteamworksNETPath}.zip";
 
-                var zippedSteamworksNETPath = $"{unzippedSteamworksNETPath}.zip";
-                if (File.Exists(zippedSteamworksNETPath))
+            // An earlier run may have been interrupted, so only reuse a
+            // directory that contains the native library for this platform.
+            if (HasSteamNativeLibrary(unzippedSteamworksNETPath))
+            {
+                path = unzippedSteamworksNETPath;
+                return;
+            }
+            TryDeleteDirectory(unzippedSteamworksNETPath);
+
+            if (File.Exists(zippedSteamworksNETPath))
+            {
+                try
                 {
-                    try
+                    ZipFile.ExtractToDirectory(zippedSteamworksNETPath, unzippedSteamworksNETPath);
+                    if (HasSteamNativeLibrary(unzippedSteamworksNETPath))
                     {
-                        ZipFile.ExtractToDirectory(zippedSteamworksNETPath, unzippedSteamworksNETPath);
                         path = unzippedSteamworksNETPath;
                         return;
                     }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"Unable to extract preexisting zip \"{zippedSteamworksNETPath}\". Redownloading zip file.");
-                        Console.WriteLine(e.ToString());
-                        try
-                        {
-                            File.Delete(zippedSteamworksNETPath);
-                        }
-                        catch
-                        {
-                            Console.WriteLine("Unable to delete corrupted zip file.");
-                            Environment.Exit(1);
-                            path = null;
-                            return;
-                        }
-                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"Unable to extract preexisting zip \"{zippedSteamworksNETPath}\". Redownloading zip file.");
+                    Console.WriteLine(e.ToString());
                 }
 
-                var downloadVersion = version_SteamworksNET.Revision == 0
-                    ? version_SteamworksNET.ToString(3)
-                    : version_SteamworksNET.ToString()
+                TryDeleteDirectory(unzippedSteamworksNETPath);
+                TryDeleteFile(zippedSteamworksNETPath);
+            }
+
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                using var response = http
+                    .GetAsync($"https://github.com/rlabrecque/Steamworks.NET/releases/download/{downloadVersion}/Steamworks.NET-Standalone_{downloadVersion}.zip")
+                    .ConfigureAwait(false).GetAwaiter().GetResult()
+                    .EnsureSuccessStatusCode()
                     ;
-
-                try
+                using (var ns = response.Content.ReadAsStream())
+                using (var fs = new FileStream(zippedSteamworksNETPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
-                    using var fs = new FileStream(
-                        zippedSteamworksNETPath,
-                        FileMode.OpenOrCreate,
-                        FileAccess.ReadWrite,
-                        FileShare.None
-                    );
-                    using var ns = new HttpClient()
-                        .GetAsync($"https://github.com/rlabrecque/Steamworks.NET/releases/download/{downloadVersion}/Steamworks.NET-Standalone_{downloadVersion}.zip")
-                        .ConfigureAwait(false).GetAwaiter().GetResult()
-                        .EnsureSuccessStatusCode()
-                        .Content
-                        .ReadAsStream()
-                        ;
-                    ns.CopyToAsync(fs, new CancellationTokenSource(10000).Token);
-                    new ZipArchive(fs, ZipArchiveMode.Read, true).ExtractToDirectory(unzippedSteamworksNETPath);
+                    // Copy synchronously: extracting while the download is
+                    // still in flight truncates the archive.
+                    ns.CopyTo(fs);
+                    fs.Flush(true);
+                }
 
-                    path = unzippedSteamworksNETPath;
-                }
-                catch
+                ZipFile.ExtractToDirectory(zippedSteamworksNETPath, unzippedSteamworksNETPath);
+                if (!HasSteamNativeLibrary(unzippedSteamworksNETPath))
                 {
-                    Console.WriteLine("Unable to download zip.");
-                    try
-                    {
-                        File.Delete(zippedSteamworksNETPath);
-                    }
-                    catch
-                    {
-                    }
-                    try
-                    {
-                        Directory.Delete(unzippedSteamworksNETPath);
-                    }
-                    catch
-                    {
-                    }
-                    throw;
+                    throw new InvalidOperationException("The Steamworks.NET archive did not contain the native library for this platform.");
                 }
+
+                path = unzippedSteamworksNETPath;
+            }
+            catch
+            {
+                Console.WriteLine("Unable to download or extract Steamworks.NET.");
+                TryDeleteFile(zippedSteamworksNETPath);
+                TryDeleteDirectory(unzippedSteamworksNETPath);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Checks whether a Steamworks.NET directory contains the native
+        /// library required by the current platform.
+        /// </summary>
+        private static bool HasSteamNativeLibrary(string root)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                return File.Exists(Path.Combine(root, "Windows-x64", "steam_api64.dll"));
+            }
+            if (OperatingSystem.IsMacOS())
+            {
+                return Directory.Exists(Path.Combine(root, "OSX-Linux-x64", "steam_api.bundle"));
+            }
+            if (OperatingSystem.IsLinux())
+            {
+                return File.Exists(Path.Combine(root, "OSX-Linux-x64", "libsteam_api.so"));
+            }
+            return false;
+        }
+
+        private static void TryDeleteFile(string filePath)
+        {
+            try
+            {
+                File.Delete(filePath);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryDeleteDirectory(string directoryPath)
+        {
+            try
+            {
+                if (Directory.Exists(directoryPath))
+                {
+                    Directory.Delete(directoryPath, true);
+                }
+            }
+            catch
+            {
             }
         }
 
@@ -242,7 +286,7 @@ namespace SteamEnablerPlugin
         // missing steam_api64.dll
         private static void Initialize_Steam()
         {
-            if (Terraria.Program.LaunchParameters.TryGetValue("-steam", out string _))
+            if (Terraria.Program.LaunchParameters.TryGetValue("-steam", out _))
             {
                 SocialAPI.Shutdown();
 
