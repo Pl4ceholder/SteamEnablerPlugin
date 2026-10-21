@@ -4,7 +4,7 @@ SteamEnablerPlugin is a plugin that turns on Steam for OTAPI. Supported and test
 Requires Terraria 1.4.5.8 and TShock 6.2.1 (or a compatible TSAPI 2.1 server on .NET 9).
 
 # Setup
-1. Get the [latest](https://github.com/Arthri/SteamEnablerPlugin/releases/latest) release.
+1. Get the [latest](https://github.com/Pl4ceholder/SteamEnablerPlugin/releases/latest) release.
 1. Place it in the `ServerPlugins` folder.
 1. [Optional] Locate Terraria's directory.
     1. Copy `start-server-steam-friends` and/or `start-server-steam-private` to the server directory.
